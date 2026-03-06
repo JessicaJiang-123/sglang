@@ -108,9 +108,11 @@ class Qwen3Attention(nn.Module):
 
         norm_kwargs = (
             dict(
-                weight_dtype=torch.float32,
+                # weight_dtype=torch.float32,
+                # cast_x_before_out_mul=True,
+                # override_orig_dtype=torch.float32,
+                weight_dtype=torch.bfloat16,
                 cast_x_before_out_mul=True,
-                override_orig_dtype=torch.float32,
             )
             if get_global_server_args().rl_on_policy_target is not None
             else {}
@@ -232,8 +234,8 @@ class Qwen3Attention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        if get_global_server_args().rl_on_policy_target is not None:
-            hidden_states = hidden_states.bfloat16()
+        # if get_global_server_args().rl_on_policy_target is not None:
+        #     hidden_states = hidden_states.bfloat16()
 
         if not _is_npu:
             q, k, v = self.forward_prepare_native(
@@ -247,9 +249,9 @@ class Qwen3Attention(nn.Module):
                 forward_batch=forward_batch,
             )
 
-        if get_global_server_args().rl_on_policy_target is not None:
-            q = q.to(torch.bfloat16)
-            k = k.to(torch.bfloat16)
+        # if get_global_server_args().rl_on_policy_target is not None:
+        #     q = q.to(torch.bfloat16)
+        #     k = k.to(torch.bfloat16)
 
         attn_output = self.attn(q, k, v, forward_batch)
         if self._is_last_layer():
@@ -309,10 +311,12 @@ class Qwen3DecoderLayer(nn.Module):
 
         norm_kwargs = (
             dict(
-                weight_dtype=torch.float32,
+                # weight_dtype=torch.float32,
+                # cast_x_before_out_mul=True,
+                # override_orig_dtype=torch.float32,
+                # fp32_residual=True,
+                weight_dtype=torch.bfloat16,
                 cast_x_before_out_mul=True,
-                override_orig_dtype=torch.float32,
-                fp32_residual=True,
             )
             if get_global_server_args().rl_on_policy_target is not None
             else {}
@@ -345,6 +349,10 @@ class Qwen3DecoderLayer(nn.Module):
         forward_batch: ForwardBatch,
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Cast to bf16 to match HF/FSDP (embedding may output fp32 due to tied weights)
+        if get_global_server_args().rl_on_policy_target is not None:
+            hidden_states = hidden_states.bfloat16()
+        
         # Layer-0 probes: before prepare_attn
         if self.layer_id == 0:
             _maybe_dump("layer0_attn_input_raw", hidden_states)

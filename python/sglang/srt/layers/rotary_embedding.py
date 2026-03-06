@@ -89,6 +89,33 @@ def _apply_rotary_emb(
         return torch.stack((o1, o2), dim=-1).flatten(-2)
 
 
+def _apply_rotary_emb_fp32(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    is_neox_style: bool,
+) -> torch.Tensor:
+    """Like _apply_rotary_emb but keeps cos/sin in fp32 (matching HF behavior).
+
+    Used for on-policy to get bitwise-matching results with HF's rope.
+    bf16 * fp32 -> fp32 via type promotion, then the result stays fp32
+    (caller is responsible for casting back if needed).
+    """
+    cos = cos.unsqueeze(-2)  # keep fp32, no .to(x.dtype)
+    sin = sin.unsqueeze(-2)
+    if is_neox_style:
+        x1, x2 = torch.chunk(x, 2, dim=-1)
+    else:
+        x1 = x[..., ::2]
+        x2 = x[..., 1::2]
+    o1 = x1 * cos - x2 * sin
+    o2 = x2 * cos + x1 * sin
+    if is_neox_style:
+        return torch.cat((o1, o2), dim=-1)
+    else:
+        return torch.stack((o1, o2), dim=-1).flatten(-2)
+
+
 class RotaryEmbedding(CustomOp):
     """Original rotary positional embedding."""
 
@@ -2871,7 +2898,11 @@ def get_rope_wrapper(
     device: Optional[str] = None,
 ):
     if device != "cpu":
-        wrapper = aiter_get_rope if _use_aiter else get_rope
+        # For on-policy, always use SGLang's get_rope (not aiter) to match HF precision
+        if _use_aiter and get_global_server_args().rl_on_policy_target is None:
+            wrapper = aiter_get_rope
+        else:
+            wrapper = get_rope
         return wrapper(
             head_size,
             rotary_dim,
