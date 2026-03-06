@@ -199,6 +199,9 @@ class Qwen3Attention(nn.Module):
 
         q, k = self.rotary_emb(positions, q, k)
 
+        if self.layer_id == 0:
+            _maybe_dump("layer0_rope_cos", self.rotary_emb._last_cos)
+            _maybe_dump("layer0_rope_sin", self.rotary_emb._last_sin)
         if self._is_last_layer():
             _maybe_dump("q_post_rope", q)
             _maybe_dump("k_post_rope", k)

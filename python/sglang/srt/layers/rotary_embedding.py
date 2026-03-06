@@ -271,6 +271,10 @@ class RotaryEmbedding(CustomOp):
         cos_sin = self.cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
 
+        # Expose cos/sin for debugging dumps
+        self._last_cos = cos
+        self._last_sin = sin
+
         query_shape = query.shape
         query = query.view(num_tokens, -1, self.head_size)
         query_rot = query[..., : self.rotary_dim]
