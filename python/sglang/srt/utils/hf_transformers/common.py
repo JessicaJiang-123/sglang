@@ -111,6 +111,29 @@ try:
         model_type = "deepseek_v32"
 
     _CONFIG_REGISTRY["deepseek_v32"] = _DeepseekV32ConfigAlias
+
+    class _DeepseekV4ConfigAlias(_HFDeepseekV3Config):
+        model_type = "deepseek_v4"
+
+        def __init__(self, **kwargs):
+            # Preserve raw config keys that DeepseekV3Config.__init__
+            # may normalize away (e.g. rope_theta -> rope_parameters)
+            # or simply not know about.
+            _preserve = (
+                "rope_theta", "compress_rope_theta", "window_size",
+                "qk_nope_head_dim", "v_head_dim", "o_lora_rank", "o_groups",
+                "n_hash_layers", "hc_mult", "hc_sinkhorn_iters", "hc_eps",
+                "expert_dtype", "compress_ratios", "swiglu_limit",
+                "index_head_dim", "index_n_heads", "index_topk",
+                "num_hash_layers", "num_nextn_predict_layers",
+            )
+            _saved = {k: kwargs[k] for k in _preserve if k in kwargs}
+            super().__init__(**kwargs)
+            for k, v in _saved.items():
+                if not hasattr(self, k):
+                    setattr(self, k, v)
+
+    _CONFIG_REGISTRY["deepseek_v4"] = _DeepseekV4ConfigAlias
 except ImportError:
     pass
 
