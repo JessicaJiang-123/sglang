@@ -277,3 +277,6 @@ sgl-kernel/csrc/**/*_musa/
 *.npz
 artifacts/
 .claude/scheduled_tasks.lock
+
+# Triton JIT cache emitted next to source on certain kernel paths
+.triton_cache/

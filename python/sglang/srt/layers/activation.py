@@ -98,7 +98,21 @@ class SiluAndMul(MultiPlatformOp):
         d = x.shape[-1] // 2
         output_shape = x.shape[:-1] + (d,)
         out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
-        _aiter_silu_and_mul(out, x, limit)
+        # amd-aiter >= 0.1.14 added the `limit` (swiglu clamp) parameter;
+        # 0.1.11 only accepts (out, input) (torch.ops schema-strict, so the
+        # extra positional triggers RuntimeError, not TypeError). Probe once
+        # and stash whether the kernel supports the limit arg.
+        if not hasattr(SiluAndMul, "_aiter_silu_has_limit"):
+            try:
+                _aiter_silu_and_mul(out, x, limit)
+                SiluAndMul._aiter_silu_has_limit = True
+                return out
+            except (TypeError, RuntimeError):
+                SiluAndMul._aiter_silu_has_limit = False
+        if SiluAndMul._aiter_silu_has_limit:
+            _aiter_silu_and_mul(out, x, limit)
+        else:
+            _aiter_silu_and_mul(out, x)
         return out
 
     def forward_cpu(self, x: torch.Tensor) -> torch.Tensor:
