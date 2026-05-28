@@ -5,7 +5,19 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 import torch
-from aiter.ops.flydsl.moe_common import GateMode
+
+try:
+    from aiter.ops.flydsl.moe_common import GateMode
+except ModuleNotFoundError:
+    # amd-aiter < 0.1.14 (e.g. 0.1.11 in older rocm/sgl-dev images) doesn't
+    # ship `aiter/ops/flydsl/moe_common.py`. The only symbol we need is
+    # `GateMode.INTERLEAVE.value` ("interleave"), so provide a local stub
+    # mirroring the upstream enum values to keep the module importable.
+    class GateMode(str, Enum):  # type: ignore[no-redef]
+        SEPARATED = "separated"
+        MOCK_GATE_ONLY = "mock_gate_only"
+        GATE_ONLY = "gate_only"
+        INTERLEAVE = "interleave"
 
 from sglang.srt.layers.moe.moe_runner.base import (
     MoeQuantInfo,
