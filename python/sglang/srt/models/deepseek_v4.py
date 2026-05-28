@@ -3224,7 +3224,15 @@ class DeepseekV4ForCausalLM(nn.Module):
                                 )
                                 loaded_params.add(name)
                 except Exception as e:
-                    e.add_note(f"{name=} {loaded_weight.shape=}")
+                    # Python 3.11+: e.add_note attaches param-name to the
+                    # exception for diagnostics. Python 3.10 (miles-hai2's
+                    # default) doesn't have add_note, so fall back to a
+                    # logger.error so the param name is visible in the log.
+                    msg = f"{name=} {loaded_weight.shape=}"
+                    if hasattr(e, "add_note"):
+                        e.add_note(msg)
+                    else:
+                        logger.error(f"DSv4 load_weights failed for {msg}")
                     raise
 
             # Wait for all tasks to complete and raise any exceptions.
