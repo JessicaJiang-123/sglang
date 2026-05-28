@@ -99,11 +99,64 @@ _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and is_hip()
 _is_gfx95_supported = is_gfx95_supported()
 
 if _use_aiter:
-    from aiter import rope_rotate_activation
+    try:
+        from aiter import rope_rotate_activation
+    except ImportError:
+        # amd-aiter < 0.1.14 (e.g. 0.1.11 in older rocm/sgl-dev images) doesn't
+        # ship `rope_rotate_activation`. Provide an in-place Python equivalent:
+        # apply RoPE to the last `rope_head_dim` channels using the precomputed
+        # cos/sin tables (gathered by `positions`), then apply the Hadamard
+        # rotate_activation in-place. Mirrors aiter's `rope_rotate_activation`
+        # contract: `rope_rotate_activation(x_in, x_out, cos, sin, positions, rope_dim)`
+        # writes the result into x_out.
+        def rope_rotate_activation(  # type: ignore[no-redef]
+            x_in: torch.Tensor,
+            x_out: torch.Tensor,
+            cos: torch.Tensor,
+            sin: torch.Tensor,
+            positions: torch.Tensor,
+            rope_dim: int,
+        ) -> None:
+            # x: [bs, n_heads, head_dim]; rope channels are the LAST rope_dim.
+            # cos/sin tables: [max_seq, rope_dim // 2] each.
+            from sglang.srt.layers.attention.nsa.nsa_indexer import (
+                rotate_activation as _hadamard_rotate,
+            )
+            # Gather per-token cos/sin: [bs, rope_dim // 2]
+            cos_t = cos.index_select(0, positions.to(torch.int64))
+            sin_t = sin.index_select(0, positions.to(torch.int64))
+            # Reshape to broadcast over heads: [bs, 1, rope_dim // 2]
+            cos_t = cos_t.unsqueeze(1)
+            sin_t = sin_t.unsqueeze(1)
+            # Slice the rope channels: [bs, n_heads, rope_dim] -> split as real/imag pairs
+            x = x_in[..., -rope_dim:]
+            # apply_rotary_emb_triton interprets the rope_dim channels as
+            # interleaved (real, imag) pairs of size rope_dim/2 each; mirror that.
+            # x_real, x_imag are each [bs, n_heads, rope_dim // 2]
+            x_real, x_imag = x[..., : rope_dim // 2], x[..., rope_dim // 2 :]
+            orig_dtype = x_real.dtype
+            xr = x_real.to(torch.float32)
+            xi = x_imag.to(torch.float32)
+            cr = cos_t.to(torch.float32)
+            ci = sin_t.to(torch.float32)
+            out_real = xr * cr - xi * ci
+            out_imag = xr * ci + xi * cr
+            new_rope = torch.cat(
+                [out_real.to(orig_dtype), out_imag.to(orig_dtype)], dim=-1
+            )
+            # Write back the rotated rope channels, then apply Hadamard.
+            # `rotate_activation` (hadamard_transform) returns a NEW tensor; we
+            # copy back into x_out to match aiter's in-place contract.
+            x_buf = x_in.clone() if x_out is not x_in else x_in
+            x_buf[..., -rope_dim:] = new_rope
+            x_out.copy_(_hadamard_rotate(x_buf))
     from aiter.tuned_gemm import tgemm as _tgemm
 
     if is_gfx95_supported():
-        from aiter.ops.triton.fused_fp8_quant import fused_rms_fp8_group_quant
+        try:
+            from aiter.ops.triton.fused_fp8_quant import fused_rms_fp8_group_quant
+        except ImportError:
+            fused_rms_fp8_group_quant = None  # type: ignore[assignment]
 
 
 def _fused_rmsnorm_fp8_quant(hidden_states, weight, eps):
