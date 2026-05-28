@@ -323,13 +323,18 @@ def _c128_decode_kernel(
             mask=valid[:, None] & (~is_input)[:, None] & d_mask[None, :],
             other=NEG_BIG,
         )
+        # Triton 3.4 doesn't auto-broadcast (1, D) pointer against (S, D) mask;
+        # 3.6 does. Materialize the row-broadcasted pointer explicitly so this
+        # works on both. (Each row points at the same in_base slice, since
+        # is_input only selects slot==127 anyway -- semantics unchanged.)
+        _row_zeros = tl.zeros((BLOCK_S,), tl.int64)
         kv_input_tile = tl.load(
-            kv_in_ptr + in_base + d_offs[None, :],
+            kv_in_ptr + in_base + _row_zeros[:, None] + d_offs[None, :],
             mask=valid[:, None] & is_input[:, None] & d_mask[None, :],
             other=0.0,
         )
         score_input_tile = tl.load(
-            kv_in_ptr + in_base + HEAD_DIM + d_offs[None, :],
+            kv_in_ptr + in_base + HEAD_DIM + _row_zeros[:, None] + d_offs[None, :],
             mask=valid[:, None] & is_input[:, None] & d_mask[None, :],
             other=NEG_BIG,
         )
