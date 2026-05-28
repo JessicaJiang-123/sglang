@@ -4007,6 +4007,13 @@ def get_or_create_event_loop():
 def maybe_torch_compile(func):
     from sglang.srt.model_executor.cuda_graph_runner import get_is_capture_mode
 
+    # On ROCm with the DSv4 hc_pre/hc_post torch fallback (when aiter MHC is
+    # disabled due to amd-aiter 0.1.11 GPU faults), torch.compile triggers
+    # inductor autotune for every captured batch size on every DP rank,
+    # adding ~30-60 minutes of wall time before the first forward. Bypass
+    # torch.compile when SGLANG_DISABLE_MAYBE_TORCH_COMPILE=1 is set.
+    if os.environ.get("SGLANG_DISABLE_MAYBE_TORCH_COMPILE") == "1":
+        return func
     if get_is_capture_mode():
         return torch.compile(func)
     return func
