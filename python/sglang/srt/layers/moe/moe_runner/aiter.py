@@ -86,7 +86,7 @@ def fused_experts_none_to_aiter(
         topk_weights = torch.ones_like(topk_weights)
 
     activation = runner_config.activation
-    output = fused_moe(
+    fused_moe_kwargs = dict(
         hidden_states=hidden_states,
         w1=quant_info.w13_weight,
         w2=quant_info.w2_weight,
@@ -107,4 +107,24 @@ def fused_experts_none_to_aiter(
         gate_mode=GateMode.INTERLEAVE.value,
         swiglu_limit=quant_info.swiglu_limit,
     )
+    # amd-aiter 0.1.11 didn't accept gate_mode / swiglu_limit (added in 0.1.14).
+    # Filter kwargs to only what the installed fused_moe accepts. Cached on first call.
+    if not hasattr(fused_experts_none_to_aiter, "_supported_fused_moe_kwargs"):
+        try:
+            import inspect as _inspect
+            sig = _inspect.signature(fused_moe)
+            params = set(sig.parameters.keys())
+            # If signature uses **kwargs, accept everything.
+            has_var_keyword = any(
+                p.kind == _inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+            fused_experts_none_to_aiter._supported_fused_moe_kwargs = (
+                None if has_var_keyword else params
+            )
+        except (TypeError, ValueError):
+            fused_experts_none_to_aiter._supported_fused_moe_kwargs = None
+    _supported = fused_experts_none_to_aiter._supported_fused_moe_kwargs
+    if _supported is not None:
+        fused_moe_kwargs = {k: v for k, v in fused_moe_kwargs.items() if k in _supported}
+    output = fused_moe(**fused_moe_kwargs)
     return StandardCombineInput(hidden_states=output)
