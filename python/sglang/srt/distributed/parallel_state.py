@@ -2408,3 +2408,155 @@ def monkey_patch_vllm_parallel_state(reverse: bool = False):
         setattr(vllm_parallel_state, "get_pp_group", get_pp_group)
         setattr(vllm_parallel_state, "get_tp_group", get_tp_group)
         setattr(vllm_parallel_state, "get_world_group", get_world_group)
+
+
+# ---------------------------------------------------------------------------
+# Backport of RankParallelismConfig + ParallelismContext from upstream sglang
+# (added in 0.5.12). Required by miles-rollout's
+# update_weight/update_weight_from_distributed/p2p.py for the
+# Megatron->sglang weight bridge under --real-rollout. Copied verbatim from
+# the rocm/sgl-dev:DSv4 image's /sgl-workspace/sglang/python/sglang/srt/
+# distributed/parallel_state.py (sglang 0.5.11.dev36); the yueming branch
+# tracks an earlier commit that predates this API.
+# ---------------------------------------------------------------------------
+
+from dataclasses import asdict as _asdict_for_pc  # noqa: E402
+from typing import Any as _Any_for_pc, Dict as _Dict_for_pc  # noqa: E402
+from unittest.mock import MagicMock as _MagicMock_for_pc  # noqa: E402
+
+
+@dataclass
+class RankParallelismConfig:
+    """Complete parallelism configuration for a single inference rank.
+    Mirrors the upstream (sglang 0.5.12+) definition; consumed by
+    miles-rollout's Megatron->sglang weight bridge to recreate a model shard
+    outside sglang."""
+
+    tp_size: int = 1
+    tp_rank: int = 0
+    pp_size: int = 1
+    pp_rank: int = 0
+    ep_size: int = 1
+    ep_rank: int = 0
+    moe_tp_size: int = 1
+    moe_tp_rank: int = 0
+    attn_tp_size: int = 1
+    attn_tp_rank: int = 0
+    attn_dp_size: int = 1
+    attn_dp_rank: int = 0
+    attn_cp_size: int = 1
+    attn_cp_rank: int = 0
+    moe_dp_size: int = 1
+    moe_dp_rank: int = 0
+
+    world_size: int = 1
+    global_rank: int = 0
+    local_rank: int = 0
+
+    def to_dict(self) -> _Dict_for_pc[str, _Any_for_pc]:
+        return _asdict_for_pc(self)
+
+    @classmethod
+    def from_dict(cls, data: _Dict_for_pc[str, _Any_for_pc]) -> "RankParallelismConfig":
+        import dataclasses as _dc
+        valid_fields = {f.name for f in _dc.fields(cls)}
+        filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered_data)
+
+    @classmethod
+    def from_parallel_state(cls, local_rank: int = 0) -> "RankParallelismConfig":
+        from sglang.srt.layers.dp_attention import (
+            get_attention_cp_rank,
+            get_attention_cp_size,
+            get_attention_dp_rank,
+            get_attention_dp_size,
+            get_attention_tp_rank,
+            get_attention_tp_size,
+        )
+        return cls(
+            tp_size=get_tensor_model_parallel_world_size(),
+            tp_rank=get_tensor_model_parallel_rank(),
+            pp_size=get_pipeline_model_parallel_world_size(),
+            pp_rank=get_pipeline_model_parallel_rank(),
+            ep_size=get_moe_expert_parallel_world_size(),
+            ep_rank=get_moe_expert_parallel_rank(),
+            moe_tp_size=get_moe_tensor_parallel_world_size(),
+            moe_tp_rank=get_moe_tensor_parallel_rank(),
+            attn_tp_size=get_attention_tp_size(),
+            attn_tp_rank=get_attention_tp_rank(),
+            attn_dp_size=get_attention_dp_size(),
+            attn_dp_rank=get_attention_dp_rank(),
+            attn_cp_size=get_attention_cp_size(),
+            attn_cp_rank=get_attention_cp_rank(),
+            moe_dp_size=get_moe_data_parallel_world_size(),
+            moe_dp_rank=get_moe_data_parallel_rank(),
+            world_size=(
+                torch.distributed.get_world_size()
+                if torch.distributed.is_initialized() else 1
+            ),
+            global_rank=(
+                torch.distributed.get_rank()
+                if torch.distributed.is_initialized() else 0
+            ),
+            local_rank=local_rank,
+        )
+
+
+_PS_GLOBALS = ("_TP", "_PP", "_MOE_EP", "_MOE_TP", "_ATTN_TP", "_ATTN_CP", "_MOE_DP")
+_DA_GLOBALS = ("_ATTN_DP_RANK", "_ATTN_DP_SIZE", "_ENABLE_DP_ATTENTION_FLAG")
+
+
+class ParallelismContext:
+    """Context manager for creating model replicas with specific parallelism
+    settings; mirrors upstream sglang 0.5.12+. Backported here so
+    miles-rollout's Megatron->sglang weight bridge works against this branch."""
+
+    def __init__(self, parallelism_config: RankParallelismConfig):
+        self.config = parallelism_config
+        self._original_globals: _Dict_for_pc[str, _Any_for_pc] = {}
+
+    def _create_mock_group(self, world_size: int, rank_in_group: int):
+        m = _MagicMock_for_pc()
+        m.world_size = world_size
+        m.rank_in_group = rank_in_group
+        m.rank = rank_in_group
+        m.local_rank = rank_in_group
+        m.ranks = list(range(world_size))
+        m.first_rank = 0
+        m.last_rank = world_size - 1
+        m.is_first_rank = rank_in_group == 0
+        m.is_last_rank = rank_in_group == world_size - 1
+        m.next_rank = m.ranks[(rank_in_group + 1) % world_size]
+        m.prev_rank = m.ranks[(rank_in_group - 1) % world_size]
+        return m
+
+    def __enter__(self):
+        conf = self.config
+        from sglang.srt.distributed import parallel_state as _ps
+        from sglang.srt.layers import dp_attention as _da
+        for name in _PS_GLOBALS:
+            self._original_globals[name] = getattr(_ps, name, None)
+        for name in _DA_GLOBALS:
+            self._original_globals[name] = getattr(_da, name, None)
+        _ps._TP = self._create_mock_group(conf.tp_size, conf.tp_rank)
+        _ps._PP = self._create_mock_group(conf.pp_size, conf.pp_rank)
+        _ps._MOE_EP = self._create_mock_group(conf.ep_size, conf.ep_rank)
+        _ps._MOE_TP = self._create_mock_group(conf.moe_tp_size, conf.moe_tp_rank)
+        _ps._ATTN_TP = self._create_mock_group(conf.attn_tp_size, conf.attn_tp_rank)
+        _ps._ATTN_CP = self._create_mock_group(conf.attn_cp_size, conf.attn_cp_rank)
+        _ps._MOE_DP = self._create_mock_group(conf.moe_dp_size, conf.moe_dp_rank)
+        _da._ATTN_DP_RANK = conf.attn_dp_rank
+        _da._ATTN_DP_SIZE = conf.attn_dp_size
+        _da._ENABLE_DP_ATTENTION_FLAG = conf.attn_dp_size > 1
+        logger.info(f"[ParallelismContext] Activated: {conf}")
+        return self
+
+    def __exit__(self, *args):
+        from sglang.srt.distributed import parallel_state as _ps
+        from sglang.srt.layers import dp_attention as _da
+        for name in _PS_GLOBALS:
+            setattr(_ps, name, self._original_globals.get(name))
+        for name in _DA_GLOBALS:
+            setattr(_da, name, self._original_globals.get(name))
+        logger.info("[ParallelismContext] Deactivated")
+        return False
