@@ -147,6 +147,19 @@ _FP8_WO_A_GEMM = envs.SGLANG_OPT_FP8_WO_A_GEMM.get()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and is_hip()
 _is_gfx95_supported = is_gfx95_supported()
 
+# DECISIVE EXPERIMENT (train_rollout_logprob_abs_diff ~ 11.2 investigation):
+# When SGLANG_DSV4_BF16_MOE=1, build the routed-expert MoE in BF16 (quant_config
+# forced to None) while leaving the attention/compressor path in FP8 (which was
+# already ruled out as the divergence source). The diagnosed divergence is the
+# routed-expert GEMM values (layer-0 moe_output: miles bf16 max|x|=20.25 vs
+# sglang fp8 1.19). Forcing the experts bf16 makes training (Megatron bf16) and
+# rollout (sglang) use the SAME bf16 expert weights, isolating whether the 11.2
+# is the fp8(rollout)-vs-bf16(train) expert-weight-quant gap or the prune floor.
+# Cannot strip quantization_config from the model config wholesale: that also
+# unquantizes the attention wkv/wq_a linears, which are fed an fp8 activation
+# tuple by the compressor regardless of quant_config -> 'tuple' has no 'dtype'.
+_DSV4_BF16_MOE = get_bool_env_var("SGLANG_DSV4_BF16_MOE")
+
 if _use_aiter:
     try:
         from aiter import rope_rotate_activation
@@ -2210,9 +2223,15 @@ class DeepseekV4DecoderLayer(nn.Module):
         )
         # TODO: check whether the implementation matches
         # TODO: make necessary changes if possible
+        # SGLANG_DSV4_BF16_MOE: force the routed-expert MoE to BF16 (quant_config
+        # None) while attention stays at the model's quant_config (fp8). See the
+        # _DSV4_BF16_MOE note near the module-level env flags.
+        _moe_quant_config = moe_quant_config_override or quant_config
+        if _DSV4_BF16_MOE:
+            _moe_quant_config = None
         self.mlp = deepseek_v2.DeepseekV2MoE(
             config=config,
-            quant_config=moe_quant_config_override or quant_config,
+            quant_config=_moe_quant_config,
             prefix=add_prefix("mlp", prefix),
             layer_id=self.layer_id,
             alt_stream=alt_streams[0] if alt_streams is not None else None,
