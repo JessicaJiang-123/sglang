@@ -53,6 +53,10 @@ def _dsv4_sgl_dump(tag, tensor, layer_id, forward_batch=None):
         rank = dist.get_rank() if dist.is_initialized() else 0
     except Exception:
         rank = 0
+    # Disk discipline: rank-0 only (these L0 tensors are TP/DP-replicated enough
+    # for the component comparison; one writer caps file count).
+    if rank != 0:
+        return
     path = f"{prefix}.sglang.L{layer_id}.r{rank}.{tag}.pt"
     try:
         torch.save(tensor.detach().float().cpu(), path)
@@ -2445,12 +2449,18 @@ class DeepseekV4DecoderLayer(nn.Module):
         )
         if fused_mhc is not None:
             residual, hidden_states, post, comb = fused_mhc
+            # Diag-3: residual here is the attn-sublayer hc_post output; hidden_states
+            # is the FFN hc_pre output (== mlp_input, pre layernorm).
+            _dsv4_sgl_dump("attn_hc_post_output", residual, self.layer_id, forward_batch)
+            _dsv4_sgl_dump("mlp_input", hidden_states, self.layer_id, forward_batch)
         else:
             hidden_states = self.hc_post(hidden_states, residual, post, comb)
             residual = hidden_states  # [n, hc, d]
+            _dsv4_sgl_dump("attn_hc_post_output", residual, self.layer_id, forward_batch)
             hidden_states, post, comb = self.hc_pre(
                 hidden_states, self.hc_ffn_fn, self.hc_ffn_scale, self.hc_ffn_base
             )  # -> [n, d]
+            _dsv4_sgl_dump("mlp_input", hidden_states, self.layer_id, forward_batch)
         hidden_states = self.post_attention_layernorm(hidden_states)
 
         # Communication logic (equivalent to LayerCommunicator):
@@ -2514,9 +2524,15 @@ class DeepseekV4DecoderLayer(nn.Module):
             hidden_states, global_hidden_states = get_local_dp_buffer(), hidden_states
             dp_scatter(hidden_states, global_hidden_states, forward_batch)
 
+        # Diag-3: MoE/MLP raw output, before HC-post.
+        _dsv4_sgl_dump("moe_output", hidden_states, self.layer_id, forward_batch)
+
         hidden_states = self.hc_post(
             hidden_states, residual, post, comb
         )  # [n, d] -> [n, hc, d]
+
+        # Diag-3: FFN-sublayer HC-post output (after sinkhorn accumulate).
+        _dsv4_sgl_dump("hc_post_output", hidden_states, self.layer_id, forward_batch)
 
         _dsv4_sgl_dump(f"layerout{self.layer_id}", hidden_states, self.layer_id)
 
