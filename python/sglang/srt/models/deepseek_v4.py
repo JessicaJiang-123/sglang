@@ -3155,6 +3155,19 @@ class DeepseekV4ForCausalLM(nn.Module):
                             continue
                         if name not in params_dict and name.startswith("mtp"):  # TODO
                             break
+                        # SGLANG_DSV4_BF16_MOE: when the routed-/shared-expert MoE
+                        # is forced to BF16, the model has no weight_scale_inv
+                        # parameter, but the Megatron->sglang refit still ships
+                        # FP8 scales for shared_experts (built from the model's
+                        # fp8 quantization_config). Skip the scale tensor when its
+                        # target param is absent so the bf16-rollout decisive test
+                        # can complete without a KeyError.
+                        if (
+                            _DSV4_BF16_MOE
+                            and name not in params_dict
+                            and name.endswith(".weight_scale_inv")
+                        ):
+                            continue
                         param = params_dict[name]
                         weight_loader = param.weight_loader
                         maybe_executor_submit(
