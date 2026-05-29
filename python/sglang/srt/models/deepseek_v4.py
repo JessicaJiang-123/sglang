@@ -29,26 +29,30 @@ def _dsv4_sgl_dump(tag, tensor, layer_id, forward_batch=None):
     layers = os.environ.get("MILES_DSV4_DUMP_LAYERS", "0").split(",")
     if str(layer_id) not in layers:
         return
-    # Only dump during a REAL prefill (extend) forward, never during CUDA-graph
-    # capture / warmup (which uses constant dummy inputs -> all-identical tokens,
-    # a misleading artifact). This matches the miles full-sequence training fwd.
+    # Only dump during a REAL multi-token prefill (extend) forward, never during
+    # CUDA-graph capture nor the dummy warmup/profile extend pass (both use
+    # constant dummy inputs -> all-identical tokens, a misleading artifact). The
+    # dummy warmup passes is_extend() too, so additionally require a real prompt:
+    # input_ids present with > 16 tokens AND not all identical. We OVERWRITE on
+    # every qualifying call so the final file is the last real rollout prefill.
     try:
         if get_is_capture_mode():
             return
-        if forward_batch is not None and not forward_batch.forward_mode.is_extend():
+        if forward_batch is None or not forward_batch.forward_mode.is_extend():
+            return
+        ids = getattr(forward_batch, "input_ids", None)
+        if ids is None or ids.numel() <= 16:
+            return
+        if int(ids.unique().numel()) <= 2:  # dummy warmup uses a constant token
             return
     except Exception:
-        pass
+        return
     try:
         import torch.distributed as dist
 
         rank = dist.get_rank() if dist.is_initialized() else 0
     except Exception:
         rank = 0
-    key = (layer_id, tag, rank)
-    if key in _DSV4_SGL_DUMP_SEEN:
-        return
-    _DSV4_SGL_DUMP_SEEN.add(key)
     path = f"{prefix}.sglang.L{layer_id}.r{rank}.{tag}.pt"
     try:
         torch.save(tensor.detach().float().cpu(), path)
