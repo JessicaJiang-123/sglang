@@ -1470,6 +1470,33 @@ class UpdateWeightsFromTensorReqOutput(BaseReq):
 
 
 @dataclass
+class PostProcessWeightsReqInput(BaseReq):
+    """Trigger post-processing hooks on the model after a weight update
+    (e.g., re-quantize FP8 blockscale weights, run model.post_load_weights()
+    to decompose DeepSeek MLA kv_b_proj into w_kc/w_vc).
+
+    Backported from upstream sglang (image's /sgl-workspace/sglang) so the
+    miles refit path can call /post_process_weights after
+    /update_weights_from_tensor — without it, the freshly-loaded BF16 weights
+    never get re-quantized to the runtime FP8 layout and the rollout returns
+    garbage (or 404 the first time around)."""
+
+    # Whether to restore weights before loading new weights
+    restore_weights_before_load: bool = False
+    # Whether to enable quantization post-processing
+    post_process_quantization: bool = False
+    # Whether to call model.post_load_weights() after weight update
+    # (e.g., DeepSeek MLA kv_b_proj decomposition into w_kc/w_vc tensors)
+    post_load_weights: bool = False
+
+
+@dataclass
+class PostProcessWeightsReqOutput(BaseReq):
+    success: bool
+    message: str
+
+
+@dataclass
 class InitWeightsSendGroupForRemoteInstanceReqInput(BaseReq):
     # The master address
     master_address: str

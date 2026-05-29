@@ -78,6 +78,8 @@ from sglang.srt.managers.io_struct import (
     UpdateWeightsFromIPCReqOutput,
     UpdateWeightsFromTensorReqInput,
     UpdateWeightsFromTensorReqOutput,
+    PostProcessWeightsReqInput,
+    PostProcessWeightsReqOutput,
 )
 from sglang.srt.server_args import LoRARef, ServerArgs
 from sglang.srt.utils import get_bool_env_var
@@ -102,6 +104,7 @@ _COMMUNICATOR_SPECS = [
     ("send_weights_to_remote_instance", SendWeightsToRemoteInstanceReqOutput),
     ("update_weights_from_tensor", UpdateWeightsFromTensorReqOutput),
     ("update_weights_from_ipc", UpdateWeightsFromIPCReqOutput),
+    ("post_process_weights", PostProcessWeightsReqOutput),
     ("get_weights_by_name", GetWeightsByNameReqOutput),
     ("release_memory_occupation", ReleaseMemoryOccupationReqOutput),
     ("resume_memory_occupation", ResumeMemoryOccupationReqOutput),
@@ -495,6 +498,28 @@ class TokenizerControlMixin:
             message += f" Weight version updated to {obj.weight_version}."
 
         return success, message
+
+    async def post_process_weights(
+        self: TokenizerManager,
+        obj: PostProcessWeightsReqInput,
+        request: Optional[fastapi.Request] = None,
+    ) -> Tuple[bool, str]:
+        """Backported from upstream sglang. Trigger model post-processing
+        (FP8 blockscale re-quantization, DeepSeek MLA kv_b_proj decomposition)
+        on every TP worker after a weight update.
+        """
+        self.auto_create_handle_loop()
+
+        async with self.is_pause_cond:
+            is_paused = self.is_pause
+
+        if is_paused:
+            results = await self.post_process_weights_communicator(obj)
+        else:
+            async with self.model_update_lock.writer_lock:
+                results = await self.post_process_weights_communicator(obj)
+
+        return FanOutCommunicator.merge_results(results)
 
     async def update_weights_from_ipc(
         self: TokenizerManager,

@@ -141,6 +141,7 @@ from sglang.srt.managers.io_struct import (
     UpdateWeightsFromTensorReqInput,
     UpdateWeightVersionReqInput,
     VertexGenerateReqInput,
+    PostProcessWeightsReqInput,
 )
 from sglang.srt.managers.multi_tokenizer_mixin import (
     MultiTokenizerRouter,
@@ -1158,6 +1159,22 @@ async def destroy_weights_update_group(
     """Destroy the parameter update group."""
     success, message = (
         await _global_state.tokenizer_manager.destroy_weights_update_group(obj, request)
+    )
+    content = {"success": success, "message": message}
+    return ORJSONResponse(
+        content, status_code=200 if success else HTTPStatus.BAD_REQUEST
+    )
+
+
+@app.post("/post_process_weights")
+@auth_level(AuthLevel.ADMIN_OPTIONAL)
+async def post_process_weights(obj: PostProcessWeightsReqInput, request: Request):
+    """Optional post-processing for updated weights (e.g., FP8 blockscale
+    re-quantization on AMD, Marlin conversion on NV, DeepSeek MLA
+    kv_b_proj decomposition). Backported from upstream sglang so miles' refit
+    path can call this after /update_weights_from_tensor."""
+    success, message = await _global_state.tokenizer_manager.post_process_weights(
+        obj, request
     )
     content = {"success": success, "message": message}
     return ORJSONResponse(
