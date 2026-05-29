@@ -837,9 +837,15 @@ class ModelRunner(ModelRunnerKVCacheMixin):
 
     def init_indexer_capturer(self):
         enable = get_global_server_args().enable_return_indexer_topk
-        # Producer wiring is CUDA-only (Indexer.forward_cuda + MLA skip_topk
-        # path); other backends would create a capturer but never feed it.
-        if enable and self.device != "cuda":
+        # Producer wiring for NSA (V3.2) is CUDA-only (Indexer.forward_cuda +
+        # MLA skip_topk path); other backends would create a capturer but never
+        # feed it. DSv4's C4Indexer feeds the capturer from
+        # compressed/indexer.py on both CUDA and HIP, so don't skip there.
+        from sglang.srt.configs.model_config import is_deepseek_compressed
+
+        if enable and self.device != "cuda" and not is_deepseek_compressed(
+            self.model_config.hf_text_config
+        ):
             logger.warning(
                 "indexer-topk capture is CUDA-only; %s backend not yet wired. "
                 "Disabling capturer.",

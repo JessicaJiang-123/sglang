@@ -143,9 +143,19 @@ def get_num_indexer_layers(config) -> int:
     With index_topk_freq > 1 some layers reuse prev layer's topk; those still
     get a slot (mirrored at the MLA call site). Other architectures: set
     num_indexer_layers on hf_text_config; 0 disables the capturer.
+
+    DSv4 / DeepseekV4ForCausalLM: instantiates an Indexer on every layer with
+    ``compress_ratio == 4`` (the C4 path), which is the layout DSv4-Flash uses
+    in its alternating compress_ratios pattern. We mirror compressed/indexer.py's
+    own capture path and key the count off compress_ratios so DSv4 inherits the
+    same capturer the routed-experts path already uses.
     """
     if is_deepseek_nsa(config):
         return config.num_hidden_layers
+    if is_deepseek_compressed(config):
+        compress_ratios = getattr(config, "compress_ratios", None)
+        if compress_ratios is not None:
+            return sum(1 for r in compress_ratios if r == 4)
     return getattr(config, "num_indexer_layers", 0)
 
 

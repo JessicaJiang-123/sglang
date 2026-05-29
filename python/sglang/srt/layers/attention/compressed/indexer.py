@@ -13,7 +13,13 @@ from sglang.srt.layers.attention.compressed.metadata import (
     PagedCoreMetadata,
     PagedIndexerMetadata,
 )
-from sglang.srt.layers.attention.indexer_topk_capturer import (
+# Route DSv4 indexer-topk capture into the same global capturer that the
+# scheduler/output-processor reads from (sglang.srt.state_capturer.indexer_topk),
+# so `enable_return_indexer_topk` works for DSv4 the same way it does for NSA
+# (V3.2). The legacy `layers.attention.indexer_topk_capturer` module is unused
+# by the scheduler and never gets a non-noop capturer installed, so writes to
+# it were silently dropped.
+from sglang.srt.state_capturer.indexer_topk import (
     get_global_indexer_capturer,
 )
 from sglang.srt.layers.attention.nsa.triton_kernel import act_quant
@@ -570,8 +576,10 @@ class C4IndexerBackend:
         if self.debug_use_external_c4_sparse_indices:
             return  # skip updating page indices
 
+        # state_capturer.indexer_topk returns None when capture is disabled
+        # (vs the legacy capturer which exposed is_enabled()).
         indexer_capturer = get_global_indexer_capturer()
-        capture_enabled = indexer_capturer.is_enabled()
+        capture_enabled = indexer_capturer is not None
 
         raw_indices = None
         if capture_enabled or forward_batch.hisparse_coordinator is not None:
