@@ -31,6 +31,7 @@ _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 
 
 from sglang.srt.layers.moe.topk import StandardTopKOutput, _mask_topk_ids_padded_region
+from sglang.srt.state_capturer.routed_experts import get_global_experts_capturer
 
 
 class HashTopK(nn.Module):
@@ -43,6 +44,7 @@ class HashTopK(nn.Module):
         scoring_func="sqrtsoftplus",
         routed_scaling_factor=1.5,
         apply_routed_scaling_factor_on_output=False,
+        layer_id: int = 0,
     ):
         super().__init__()
         self.num_experts = num_experts
@@ -50,6 +52,7 @@ class HashTopK(nn.Module):
         self.routed_scaling_factor = routed_scaling_factor
         self.num_fused_shared_experts = num_fused_shared_experts
         self.score_func = scoring_func
+        self.layer_id = layer_id
         self.tid2eid = nn.Parameter(
             torch.empty(vocab_size, topk - num_fused_shared_experts, dtype=torch.int32),
             requires_grad=False,
@@ -147,6 +150,11 @@ class HashTopK(nn.Module):
 
         topk_ids = topk_ids_logical_to_physical(topk_ids, expert_location_dispatch_info)
         _mask_topk_ids_padded_region(topk_ids, num_token_non_padded)
+        # Mirror _post_process_topk_ids: feed hash-layer expert selections into
+        # the routed-experts capturer so rollout-routing-replay (R3) covers all
+        # MoE layers, not just the standard-TopK ones.
+        if (cap := get_global_experts_capturer()) is not None:
+            cap.capture(layer_id=self.layer_id, topk_indices=topk_ids)
         topk_output = StandardTopKOutput(
             topk_weights=topk_weights, topk_ids=topk_ids, router_logits=router_logits
         )
