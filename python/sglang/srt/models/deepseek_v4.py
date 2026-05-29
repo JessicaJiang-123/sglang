@@ -22,13 +22,23 @@ import sglang.srt.models.deepseek_v2 as deepseek_v2
 _DSV4_SGL_DUMP_SEEN = set()
 
 
-def _dsv4_sgl_dump(tag, tensor, layer_id):
+def _dsv4_sgl_dump(tag, tensor, layer_id, forward_batch=None):
     prefix = os.environ.get("MILES_DSV4_DUMP")
     if not prefix or tensor is None:
         return
     layers = os.environ.get("MILES_DSV4_DUMP_LAYERS", "0").split(",")
     if str(layer_id) not in layers:
         return
+    # Only dump during a REAL prefill (extend) forward, never during CUDA-graph
+    # capture / warmup (which uses constant dummy inputs -> all-identical tokens,
+    # a misleading artifact). This matches the miles full-sequence training fwd.
+    try:
+        if get_is_capture_mode():
+            return
+        if forward_batch is not None and not forward_batch.forward_mode.is_extend():
+            return
+    except Exception:
+        pass
     try:
         import torch.distributed as dist
 
@@ -2102,9 +2112,9 @@ class MQALayer(nn.Module):
                 x_quant=x_quant,
             )
 
-        _dsv4_sgl_dump("q", q_padded if q_padded is not None else q, self.layer_id)
-        _dsv4_sgl_dump("kv", kv, self.layer_id)
-        _dsv4_sgl_dump("attn_sink", self.attn_sink, self.layer_id)
+        _dsv4_sgl_dump("q", q_padded if q_padded is not None else q, self.layer_id, forward_batch)
+        _dsv4_sgl_dump("kv", kv, self.layer_id, forward_batch)
+        _dsv4_sgl_dump("attn_sink", self.attn_sink, self.layer_id, forward_batch)
         # for TP attention, use the padded q, since q_out is set to the correct slice
         o = attn_backend.forward(
             q=q_padded if q_padded is not None else q,
@@ -2118,7 +2128,7 @@ class MQALayer(nn.Module):
         )
         # NOTE: no-op for pure DP-attention
         o = o[:, tp_slice, :]
-        _dsv4_sgl_dump("attn_o_raw", o, self.layer_id)
+        _dsv4_sgl_dump("attn_o_raw", o, self.layer_id, forward_batch)
         fused_rope(
             o[..., -self.qk_rope_head_dim :],
             None,
@@ -2153,7 +2163,7 @@ class MQALayer(nn.Module):
 
         o, _ = self.wo_b(o.flatten(1))
 
-        _dsv4_sgl_dump("attn_out", o, self.layer_id)
+        _dsv4_sgl_dump("attn_out", o, self.layer_id, forward_batch)
         return o
 
 
