@@ -2518,6 +2518,8 @@ class DeepseekV4DecoderLayer(nn.Module):
             hidden_states, residual, post, comb
         )  # [n, d] -> [n, hc, d]
 
+        _dsv4_sgl_dump(f"layerout{self.layer_id}", hidden_states, self.layer_id)
+
         if envs.SGLANG_DSV4_2604_SUBMODE.get() == "2604B":
             deepseek_v4_moe_code_path_checker.observed = 0
 
@@ -2627,6 +2629,7 @@ class DeepseekV4Model(nn.Module):
             else None
         )
         hidden_states = self.embed_tokens(input_ids)
+        _dsv4_sgl_dump("embed", hidden_states, 0)
         hidden_states = hidden_states.unsqueeze(1).repeat(1, self.hc_mult, 1)
 
         if get_attention_dp_size() > 1 and get_moe_a2a_backend().is_none():
@@ -2680,7 +2683,9 @@ class DeepseekV4Model(nn.Module):
         hidden_states = self.hc_head(
             hidden_states, self.hc_head_fn, self.hc_head_scale, self.hc_head_base
         )
+        _dsv4_sgl_dump("final_hidden", hidden_states, 0)
         hidden_states = self.norm(hidden_states)
+        _dsv4_sgl_dump("post_norm", hidden_states, 0)
 
         if pre_hc_head is not None:
             return hidden_states, pre_hc_head
