@@ -13,6 +13,37 @@ import triton
 import triton.language as tl
 
 import sglang.srt.models.deepseek_v2 as deepseek_v2
+
+# --- Diagnostic-2 per-layer activation dump (MILES_DSV4_DUMP=/path/prefix) ---
+# Mirror of the miles-side dump in miles_plugins/models/deepseek_v4/deepseek_v4.py.
+# Writes <prefix>.sglang.L{layer}.r{rank}.{tag}.pt (fp32 CPU) once per
+# (layer,tag,rank). Used to compare the sglang inference forward against the
+# miles training forward for the train_rollout_logprob_abs_diff investigation.
+_DSV4_SGL_DUMP_SEEN = set()
+
+
+def _dsv4_sgl_dump(tag, tensor, layer_id):
+    prefix = os.environ.get("MILES_DSV4_DUMP")
+    if not prefix or tensor is None:
+        return
+    layers = os.environ.get("MILES_DSV4_DUMP_LAYERS", "0").split(",")
+    if str(layer_id) not in layers:
+        return
+    try:
+        import torch.distributed as dist
+
+        rank = dist.get_rank() if dist.is_initialized() else 0
+    except Exception:
+        rank = 0
+    key = (layer_id, tag, rank)
+    if key in _DSV4_SGL_DUMP_SEEN:
+        return
+    _DSV4_SGL_DUMP_SEEN.add(key)
+    path = f"{prefix}.sglang.L{layer_id}.r{rank}.{tag}.pt"
+    try:
+        torch.save(tensor.detach().float().cpu(), path)
+    except Exception as e:  # noqa: BLE001
+        print(f"[dsv4-sgl-dump] failed to save {path}: {e}")
 from sglang.jit_kernel.deepseek_v4 import fused_rope, linear_bf16_fp32
 from sglang.srt.configs.deepseek_v4 import (
     DeepSeekV4Config,
@@ -2071,6 +2102,9 @@ class MQALayer(nn.Module):
                 x_quant=x_quant,
             )
 
+        _dsv4_sgl_dump("q", q_padded if q_padded is not None else q, self.layer_id)
+        _dsv4_sgl_dump("kv", kv, self.layer_id)
+        _dsv4_sgl_dump("attn_sink", self.attn_sink, self.layer_id)
         # for TP attention, use the padded q, since q_out is set to the correct slice
         o = attn_backend.forward(
             q=q_padded if q_padded is not None else q,
@@ -2084,6 +2118,7 @@ class MQALayer(nn.Module):
         )
         # NOTE: no-op for pure DP-attention
         o = o[:, tp_slice, :]
+        _dsv4_sgl_dump("attn_o_raw", o, self.layer_id)
         fused_rope(
             o[..., -self.qk_rope_head_dim :],
             None,
@@ -2118,6 +2153,7 @@ class MQALayer(nn.Module):
 
         o, _ = self.wo_b(o.flatten(1))
 
+        _dsv4_sgl_dump("attn_out", o, self.layer_id)
         return o
 
 
