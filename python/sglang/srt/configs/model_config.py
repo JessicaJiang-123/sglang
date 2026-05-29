@@ -155,7 +155,16 @@ def get_num_indexer_layers(config) -> int:
     if is_deepseek_compressed(config):
         compress_ratios = getattr(config, "compress_ratios", None)
         if compress_ratios is not None:
-            return sum(1 for r in compress_ratios if r == 4)
+            # Slice to num_hidden_layers: DSv4-Flash configs ship the
+            # FULL-model (43-layer) compress_ratios array even on pruned
+            # checkpoints (4-layer, 8-layer, ...), so a naive count would
+            # over-allocate the capturer buffer and mis-index when the model
+            # only runs the first N layers. _init_compressed_layer_mapping in
+            # deepseekv4_memory_pool.py also walks layer-by-layer up to
+            # num_hidden_layers, so this matches the c4_cnt ceiling used for
+            # compress_layer_id.
+            n = getattr(config, "num_hidden_layers", len(compress_ratios))
+            return sum(1 for r in compress_ratios[:n] if r == 4)
     return getattr(config, "num_indexer_layers", 0)
 
 
