@@ -29,21 +29,21 @@ def _dsv4_sgl_dump(tag, tensor, layer_id, forward_batch=None):
     layers = os.environ.get("MILES_DSV4_DUMP_LAYERS", "0").split(",")
     if str(layer_id) not in layers:
         return
-    # Only dump during a REAL multi-token prefill (extend) forward, never during
-    # CUDA-graph capture nor the dummy warmup/profile extend pass (both use
-    # constant dummy inputs -> all-identical tokens, a misleading artifact). The
-    # dummy warmup passes is_extend() too, so additionally require a real prompt:
-    # input_ids present with > 16 tokens AND not all identical. We OVERWRITE on
-    # every qualifying call so the final file is the last real rollout prefill.
+    # Only dump a REAL multi-token forward, never CUDA-graph capture nor the dummy
+    # warmup/profile pass (both use constant dummy inputs -> all-identical rows, a
+    # misleading artifact). Gate directly on the dumped tensor having real
+    # per-token variation: >16 rows AND >2 distinct rows. We OVERWRITE on every
+    # qualifying call so the final file is the last real rollout prefill.
     try:
         if get_is_capture_mode():
             return
-        if forward_batch is None or not forward_batch.forward_mode.is_extend():
+        t = tensor.detach()
+        rows = t.reshape(-1, t.shape[-1]) if t.ndim >= 2 else t.reshape(-1, 1)
+        if rows.shape[0] <= 16:
             return
-        ids = getattr(forward_batch, "input_ids", None)
-        if ids is None or ids.numel() <= 16:
-            return
-        if int(ids.unique().numel()) <= 2:  # dummy warmup uses a constant token
+        # cheap distinct-row check on a fp32 cpu copy of up to 4096 rows
+        sample = rows[:4096].float().cpu()
+        if int(torch.unique(sample, dim=0).shape[0]) <= 2:
             return
     except Exception:
         return
