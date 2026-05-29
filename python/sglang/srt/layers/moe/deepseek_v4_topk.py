@@ -96,7 +96,12 @@ class HashTopK(nn.Module):
             topk_weights[:, :-1] = scores.gather(1, topk_ids[:, :-1])
 
             if self.score_func != "softmax":
+                # Match Megatron/miles: routed weights normalized to sum to
+                # ``routed_scaling_factor`` (probs/probs.sum()*scaling_factor),
+                # not to 1. Keeps the inference MoE magnitude consistent with the
+                # training forward (fixes train_rollout_logprob_abs_diff).
                 topk_weights[:, :-1] /= topk_weights[:, :-1].sum(dim=-1, keepdim=True)
+                topk_weights[:, :-1] *= self.routed_scaling_factor
 
             # reference: biased_grouped_topk_impl in topk.py
             topk_ids[:, -1] = torch.randint(
@@ -107,10 +112,10 @@ class HashTopK(nn.Module):
                 device=topk_ids.device,
             )
 
-            # don't apply routed scaling factor here
-            topk_weights[:, -1] = (
-                topk_weights[:, :-1].sum(dim=-1) / self.routed_scaling_factor
-            )
+            # Shared expert added at weight 1.0 (megatron adds shared_expert_output
+            # with no routed_scaling_factor). With routed weights now summing to
+            # routed_scaling_factor, this matches the training-canonical mix.
+            topk_weights[:, -1] = 1.0
         else:
             topk_ids[:, :] = self.tid2eid[input_ids]
             topk_weights[:, :] = scores.gather(1, topk_ids[:, :])

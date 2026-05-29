@@ -48,8 +48,18 @@ def _hash_topk_triton_kernel(
     weight = tl.where(routed_mask, weight, 0.0)
     routed_sum = tl.sum(weight, axis=0)
 
-    shared_weight = 1.0 / routed_scaling_factor
-    final_weight = tl.where(is_shared, shared_weight, weight / routed_sum)
+    # Match the Megatron/miles training-canonical weighting: routed-expert
+    # weights are normalized to sum to ``routed_scaling_factor`` (megatron does
+    # ``probs = probs / probs.sum() * scaling_factor``) and the shared expert is
+    # added at weight 1.0. The previous formulation (routed sum 1, shared
+    # 1/scaling_factor) is ``1/scaling_factor`` times the canonical MoE output,
+    # so the inference forward systematically under-weighted the MoE block vs
+    # training (root cause of train_rollout_logprob_abs_diff). See
+    # megatron moe_utils.topk_routing_with_score_function.
+    shared_weight = 1.0
+    final_weight = tl.where(
+        is_shared, shared_weight, weight / routed_sum * routed_scaling_factor
+    )
     shared_id = num_routed_experts + (k_off - topk_routed)
     final_id = tl.where(is_shared, shared_id, expert_id).to(tl.int32)
 
