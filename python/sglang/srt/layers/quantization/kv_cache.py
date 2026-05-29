@@ -45,29 +45,30 @@ class BaseKVCacheMethod(QuantizeMethodBase):
         raise RuntimeError(f"{self.__class__.__name__}.apply should not be called.")
 
     def process_weights_after_loading(self, layer) -> None:
-        if layer.k_scale > 0.0 and layer.v_scale > 0.0:
+        # Guard for the RL/refit case: this method is called once at initial
+        # load (which copies 1.0 into both scales) and then again after every
+        # miles weight refit (via post_process_weights). On the second call
+        # both scales are already 1.0; on a mixed-state call (e.g., one rank
+        # had a partial update), the original assertion at the else branch
+        # crashes the scheduler. Coerce all "ambiguous" combinations to the
+        # safe default of 1.0 since DSv4 MLA on AMD doesn't ship per-attn
+        # KV scales anyway -- mirrors the "no scaling factors provided" warning
+        # in model_runner.py:1488.
+        k_is_pos = float(layer.k_scale) > 0.0
+        v_is_pos = float(layer.v_scale) > 0.0
+        if k_is_pos and v_is_pos:
             # We prefer to use separate k_scale and v_scale if present
             k_scale = layer.k_scale.to("cpu").tolist()
             v_scale = layer.v_scale.to("cpu").tolist()
             if is_fp8_fnuz():
                 k_scale *= 2
                 v_scale *= 2
-        elif layer.k_scale < 0.0 and layer.v_scale < 0.0:
-            # If no scales were loaded (both scales are invalid negative
-            # values), use the default value of 1.0
+        else:
+            # Either both scales are invalid (initial -1.0 init) or one is
+            # positive and the other is zero/negative (RL refit edge case).
+            # Use the safe default value of 1.0.
             k_scale = 1.0
             v_scale = 1.0
-        else:
-            # If we find a single kv_scale in the checkpoint, we remap
-            # kv_scale to k_scale during weight loading, and duplicate
-            # k_scale to v_scale here
-            assert layer.k_scale > 0.0
-            scale_to_duplicate = max(layer.k_scale, layer.v_scale)
-            k_scale = scale_to_duplicate.to("cpu").tolist()
-            v_scale = scale_to_duplicate.to("cpu").tolist()
-            if is_fp8_fnuz():
-                k_scale *= 2
-                v_scale *= 2
 
         if not isinstance(k_scale, float) or not isinstance(v_scale, float):
             raise ValueError(
