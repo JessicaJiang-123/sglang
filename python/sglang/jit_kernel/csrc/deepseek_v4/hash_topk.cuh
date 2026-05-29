@@ -61,7 +61,12 @@ __global__ void moe_hash_topk_fused(const MoEHashTopKParams __grid_constant__ pa
     const bool is_shared = lane_id >= topk;
     const auto output_offset = warp_id * topk_fused + lane_id;
     topk_ids[output_offset] = is_shared ? num_routed_experts + lane_id - topk : expert_id;
-    topk_weights[output_offset] = is_shared ? 1.0f / routed_scaling_factor : routed_weight / routed_sum;
+    // Match Megatron/miles training-canonical weighting: routed weights sum to
+    // routed_scaling_factor and the shared expert is added at weight 1.0 (was
+    // routed sum 1 / shared 1/scaling_factor, i.e. 1/scaling_factor of canonical
+    // -- root cause of train_rollout_logprob_abs_diff). Mirrors hash_topk.py.
+    topk_weights[output_offset] =
+        is_shared ? 1.0f : (routed_weight / routed_sum) * routed_scaling_factor;
   }
 
   PDLTriggerSecondary<kUsePDL>();
