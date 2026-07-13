@@ -18,7 +18,7 @@ from sglang.srt.layers.moe.moe_runner.base import (
     register_pre_permute,
 )
 from sglang.srt.layers.moe.utils import MoeRunnerBackend
-from sglang.srt.utils import get_bool_env_var, get_int_env_var
+from sglang.srt.utils import get_bool_env_var, get_int_env_var, is_gfx95_supported
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher.base import CombineInput
@@ -182,6 +182,14 @@ class AiterRunnerCore(MoeRunnerCore):
             extra["swiglu_limit"] = quant_info.swiglu_limit
         if self.config.no_combine:
             extra["no_combine"] = True
+
+        if (
+            runner_input.hidden_states.shape[0] == 1
+            and runner_input.quant_type == AiterQuantType.PER_128X128
+            and "block_size_M" not in extra
+            and is_gfx95_supported()
+        ):
+            extra["block_size_M"] = 32
 
         output = fused_moe(
             hidden_states=runner_input.hidden_states,
