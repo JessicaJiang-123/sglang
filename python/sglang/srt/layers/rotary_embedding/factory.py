@@ -51,6 +51,13 @@ def _get_rope_param(rope_scaling, key, default, scaling_type):
     return default
 
 
+def _complete_rope_scaling_for_aiter(rope_scaling, max_position):
+    scaling_type = rope_scaling.get("rope_type") if rope_scaling else None
+    if scaling_type != "deepseek_yarn":
+        return rope_scaling
+    return {"original_max_position_embeddings": max_position, **rope_scaling}
+
+
 _is_hip = is_hip()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
 
@@ -467,6 +474,8 @@ def get_rope_wrapper(
     device: Optional[str] = None,
 ):
     if device != "cpu":
+        if _use_aiter:
+            rope_scaling = _complete_rope_scaling_for_aiter(rope_scaling, max_position)
         wrapper = aiter_get_rope if _use_aiter else get_rope
         return wrapper(
             head_size,
