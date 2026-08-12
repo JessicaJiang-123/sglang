@@ -405,6 +405,9 @@ def empty_device_cache(device_module: Optional[Any] = None) -> bool:
     return True
 
 
+_is_hip = torch.version.hip is not None
+
+
 def get_available_gpu_memory(
     device, gpu_id, distributed=False, empty_cache=True, cpu_group=None
 ):
@@ -434,7 +437,16 @@ def get_available_gpu_memory(
             # memory metric instead.
             free_gpu_memory = psutil.virtual_memory().available
         else:
-            free_gpu_memory, _ = torch.cuda.mem_get_info(gpu_id)
+            free_gpu_memory, total_gpu_memory = torch.cuda.mem_get_info(gpu_id)
+            if _is_hip:
+                # ROCm can report more free memory than the device physically has
+                # (observed on MI355X: 479 GB free on a 288 GB card once weights are
+                # resident), which makes the KV pool budget wildly over-sized. Cap it
+                # the same way the XPU branch below does.
+                free_gpu_memory = min(
+                    float(free_gpu_memory),
+                    max(0.0, float(total_gpu_memory) - float(torch.cuda.memory_allocated(gpu_id))),
+                )
 
     elif device == "xpu":
         num_gpus = torch.xpu.device_count()
