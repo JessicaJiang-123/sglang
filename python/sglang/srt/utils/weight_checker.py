@@ -53,6 +53,9 @@ class QuantizedWeight(NamedTuple):
 
 _NON_PERSISTENT_BUFFER_PATTERNS = (
     "cos_sin_cache",
+    # aiter splits the rotary cache into two buffers under different names.
+    "cos_cache",
+    "sin_cache",
     "inv_freq",
     "freqs_cis",
     "_weight_fp32",
